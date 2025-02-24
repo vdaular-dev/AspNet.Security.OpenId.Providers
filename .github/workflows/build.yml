@@ -26,6 +26,11 @@ jobs:
     outputs:
       dotnet-sdk-version: ${{ steps.setup-dotnet.outputs.dotnet-version }}
 
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+
     strategy:
       fail-fast: false
       matrix:
@@ -40,16 +45,11 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@44c2b7a8a4ea60a981eaca3cf939b5f4305c123b # v4.1.5
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
     - name: Setup .NET SDK
-      uses: actions/setup-dotnet@4d6c8fcf3c8f7a60068d26b594648e99df24cee3 # v4.0.0
+      uses: actions/setup-dotnet@3951f0dfe7a07e2313ec93c75700083e2005cbab # v4.3.0
       id: setup-dotnet
-
-    - name: Setup NuGet
-      uses: nuget/setup-nuget@a21f25cd3998bf370fde17e3f1b4c12c175172f9 # v2.0.0
-      with:
-        nuget-version: '5.11.0'
 
     # Arcade only allows the revision to contain up to two characters, and GitHub Actions does not roll-over
     # build numbers every day like Azure DevOps does. To balance these two requirements, set the official
@@ -77,21 +77,35 @@ jobs:
       if: ${{ runner.os != 'Windows' }}
       run: ./eng/common/cibuild.sh -configuration Release -prepareMachine
 
+    - name: Attest artifacts
+      uses: actions/attest-build-provenance@520d128f165991a6c774bcb264f323e3d70747f4 # v2.2.0
+      if: |
+        runner.os == 'Windows' &&
+        github.event.repository.fork == false &&
+        (github.ref_name == github.event.repository.default_branch ||
+         startsWith(github.ref, 'refs/heads/dev') ||
+         startsWith(github.ref, 'refs/heads/rel/') ||
+         startsWith(github.ref, 'refs/tags/'))
+      with:
+        subject-path: |
+          ./artifacts/bin/AspNet.Security.*/Release/**/AspNet.Security.*.dll
+          ./artifacts/packages/Release/Shipping/*
+
     - name: Publish logs
-      uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+      uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
       if: ${{ always() }}
       with:
         name: logs-${{ matrix.os_name }}
         path: ./artifacts/log/Release
 
     - name: Publish NuGet packages
-      uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+      uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
       with:
         name: packages-${{ matrix.os_name }}
         path: ./artifacts/packages/Release/Shipping
 
     - name: Publish test results
-      uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+      uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
       if: ${{ always() }}
       with:
         name: testresults-${{ matrix.os_name }}
@@ -103,19 +117,19 @@ jobs:
     steps:
 
     - name: Download packages
-      uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
+      uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
       with:
         name: packages-windows
 
     - name: Setup .NET SDK
-      uses: actions/setup-dotnet@4d6c8fcf3c8f7a60068d26b594648e99df24cee3 # v4.0.0
+      uses: actions/setup-dotnet@3951f0dfe7a07e2313ec93c75700083e2005cbab # v4.3.0
       with:
         dotnet-version: ${{ needs.build.outputs.dotnet-sdk-version }}
 
     - name: Validate NuGet packages
       shell: pwsh
       run: |
-        dotnet tool install --global dotnet-validate --version 0.0.1-preview.304
+        dotnet tool install --global dotnet-validate --version 0.0.1-preview.304 --allow-roll-forward
         $packages = Get-ChildItem -Filter "*.nupkg" | ForEach-Object { $_.FullName }
         $invalidPackages = 0
         foreach ($package in $packages) {
@@ -126,6 +140,7 @@ jobs:
         }
         if ($invalidPackages -gt 0) {
           Write-Output "::error::$invalidPackages NuGet package(s) failed validation."
+          exit 1
         }
 
   publish-myget:
@@ -133,26 +148,26 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       github.event.repository.fork == false &&
-      (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) ||
+      (github.ref_name == github.event.repository.default_branch ||
        startsWith(github.ref, 'refs/heads/dev') ||
        startsWith(github.ref, 'refs/heads/rel/') ||
        startsWith(github.ref, 'refs/tags/'))
     steps:
 
     - name: Download packages
-      uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
+      uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
       with:
         name: packages-windows
 
     - name: Setup .NET SDK
-      uses: actions/setup-dotnet@4d6c8fcf3c8f7a60068d26b594648e99df24cee3 # v4.0.0
+      uses: actions/setup-dotnet@3951f0dfe7a07e2313ec93c75700083e2005cbab # v4.3.0
       with:
         dotnet-version: ${{ needs.build.outputs.dotnet-sdk-version }}
 
     - name: Push NuGet packages to aspnet-contrib MyGet
       env:
         MYGET_API_KEY: ${{ secrets.MYGET_API_KEY }}
-      run: nuget push "*.nupkg" -ApiKey "${MYGET_API_KEY}" -SkipDuplicate -Source https://www.myget.org/F/aspnet-contrib/api/v3/index.json
+      run: dotnet nuget push "*.nupkg" --api-key "${MYGET_API_KEY}" --skip-duplicate --source https://www.myget.org/F/aspnet-contrib/api/v3/index.json
 
   publish-nuget:
     needs: [ build, validate-packages ]
@@ -163,16 +178,16 @@ jobs:
     steps:
 
     - name: Download packages
-      uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
+      uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
       with:
         name: packages-windows
 
     - name: Setup .NET SDK
-      uses: actions/setup-dotnet@4d6c8fcf3c8f7a60068d26b594648e99df24cee3 # v4.0.0
+      uses: actions/setup-dotnet@3951f0dfe7a07e2313ec93c75700083e2005cbab # v4.3.0
       with:
         dotnet-version: ${{ needs.build.outputs.dotnet-sdk-version }}
 
     - name: Push NuGet packages to NuGet.org
       env:
         NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
-      run: nuget push "*.nupkg" -ApiKey "${NUGET_API_KEY}" -SkipDuplicate -Source https://api.nuget.org/v3/index.json
+      run: dotnet nuget push "*.nupkg" --api-key "${NUGET_API_KEY}" --skip-duplicate --source https://api.nuget.org/v3/index.json
